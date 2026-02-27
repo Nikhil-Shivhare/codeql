@@ -47,7 +47,23 @@ def ping():
     return "Ping executed safely"
 
 
+@app.route("/search")
+def search():
+    name = request.args.get("name")
+
+    # Developer thinks this is safe
+    name = name.replace("'", "")
+
+    query = "SELECT * FROM users WHERE name = '" + name + "'"
+    cursor = sqlite3.connect("users.db").cursor()
+    cursor.execute(query)
+
+    return "Done"
+
 if __name__ == "__main__":
     # ✅ FIX 3: Disable debug mode in production
     # Debug=True exposes stack traces and sensitive info
     app.run(debug=False)
+    
+    
+    
