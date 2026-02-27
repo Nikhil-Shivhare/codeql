@@ -1,16 +1,11 @@
 """
-Advanced CodeQL Evasion & Static Analysis Challenge Lab
+Super Advanced CodeQL Evasion Lab
+--------------------------------
 
-⚠️ This file contains intentionally vulnerable patterns.
-⚠️ Use for learning only (not production).
+This file uses highly dynamic constructs and indirect control/data
+flows that are challenging for static analysis engines to model.
 
-This file introduces more sophisticated patterns that can 
-confuse static analysis engines — such as:
-- dynamic attribute invocation
-- reflection
-- higher-order taint propagation
-- indirect control / data flows
-- deferred evaluation
+⚠️ Not safe for production — for learning only!
 """
 
 from flask import Flask, request
@@ -21,153 +16,84 @@ import importlib
 
 app = Flask(__name__)
 
-# -----------------------------------------------------------
-# 1) DYNAMIC IMPORT & EXECUTION
-# -----------------------------------------------------------
+# --------------------------------------------------------
+# 1) DYNAMICALLY GENERATED CODE + EVAL
+# --------------------------------------------------------
 
-@app.route("/dynamic_import")
-def dynamic_import():
-    # Attacker controls module and function name
-    mod_name = request.args.get("m")
-    fn_name = request.args.get("f")
-
-    # Dynamically import module at runtime
-    mod = importlib.import_module(mod_name)
-
-    # Dynamically get function
-    func = getattr(mod, fn_name)
-
-    # DIRECT EXECUTION WITH UNTRUSTED DATA
-    return func(request.args.get("p"))  # potential RCE
-
-
-# -----------------------------------------------------------
-# 2) REFLECTIVE ATTRIBUTE INVOCATION
-# -----------------------------------------------------------
-
-@app.route("/reflective_call")
-def reflective_call():
-    ip = request.args.get("ip")
-
-    cmd_obj = os  # system module reference
-    method_name = "system"  # method name as string
-
-    # Use getattr to call os.system
-    method = getattr(cmd_obj, method_name)
-    method("ping -c 1 " + ip)
-
-    return "reflective ping"
-
-
-# -----------------------------------------------------------
-# 3) TAINT VIA DEFERRED EVALUATION (LAMBDA)
-# -----------------------------------------------------------
-
-@app.route("/lambda_sql")
-def lambda_sql():
-    user_input = request.args.get("id")
-
-    # Create lambda with unsafe execution
-    exec_sql = lambda x: "SELECT * FROM users WHERE id=" + x
-
-    conn = sqlite3.connect("users.db")
-    cursor = conn.cursor()
-    cursor.execute(exec_sql(user_input))
-
-    return "lambda SQL"
-
-
-# -----------------------------------------------------------
-# 4) NESTED STRUCTURES WITH LIST COMPREHENSIONS
-# -----------------------------------------------------------
-
-@app.route("/nested_flow")
-def nested_flow():
-    vals = [request.args.get("id"), "safe"]
-
-    # nested list comprehension obscures flow
-    query_parts = [f"SELECT * FROM users WHERE id={v}" for v in vals]
-    query = " UNION ".join(query_parts)
-
+@app.route("/dynamic_eval_sql")
+def dynamic_eval_sql():
+    # Build code at runtime
+    template = "q='SELECT * FROM users WHERE id=' + user_in"
+    user_in = request.args.get("id")
+    exec(template)  # Runtime code generation
     conn = sqlite3.connect("users.db")
     cur = conn.cursor()
-    cur.execute(query)
-
-    return "nested flow executed"
+    return str(cur.execute(q).fetchall())
 
 
-# -----------------------------------------------------------
-# 5) TYPED DECORATOR THAT PROPAGATES TAINT
-# -----------------------------------------------------------
+# --------------------------------------------------------
+# 2) EVAL WITH CUSTOM BUILTINS
+# --------------------------------------------------------
 
-def taint_decorator(fn):
-    def wrapper(x):
-        # wrapper doesn't sanitize
-        return fn(x)
-    return wrapper
-
-@taint_decorator
-def unsafe_query(x):
-    return "SELECT * FROM users WHERE id=" + x
-
-@app.route("/decorator_sql")
-def decorator_sql():
-    inp = request.args.get("id")
-    c = sqlite3.connect("users.db").cursor()
-    c.execute(unsafe_query(inp))
-    return "decorated SQL"
+@app.route("/eval_builtins")
+def eval_builtins():
+    # Remove safe builtins and explicitly eval
+    user_code = "cursor.execute('SELECT * FROM users WHERE id=' + " + repr(request.args.get("id")) + ")"
+    namespace = {"cursor": sqlite3.connect("users.db").cursor()}
+    eval(user_code, {"__builtins__": {}}, namespace)
+    return "eval builtins done"
 
 
-# -----------------------------------------------------------
-# 6) CONTROLLED INDIRECT CONCATENATION
-# -----------------------------------------------------------
+# --------------------------------------------------------
+# 3) SINK INVOKED VIA REFLECTIVE WRAPPER
+# --------------------------------------------------------
 
-@app.route("/indirect_concat")
-def indirect_concat():
-    p1 = "SELECT "
-    p2 = " * FROM users WHERE id="
-    user = request.args.get("id")
+class ReflectiveSink:
+    def __init__(self, obj):
+        self._obj = obj
 
-    # combine parts indirectly
-    query = "".join([p1, p2, str(user)])
-    sqlite3.connect("users.db").cursor().execute(query)
-    return "indirect concat"
+    def __getattr__(self, name):
+        # Any attribute access becomes a call to the object
+        def inner(*args, **kwargs):
+            return getattr(self._obj, name)(*args, **kwargs)
+        return inner
 
-
-# -----------------------------------------------------------
-# 7) VARIABLE TYPE CONFUSION (CASTS + BUILTINS)
-# -----------------------------------------------------------
-
-@app.route("/type_confusion")
-def type_confusion():
+@app.route("/reflective_wrapper")
+def reflective_wrapper():
+    cur = ReflectiveSink(sqlite3.connect("users.db").cursor())
     val = request.args.get("id")
-    # convert to int (could crash)
-    try:
-        ival = int(val)
-    except:
-        ival = 0
-    q = "SELECT * FROM users WHERE id =" + str(ival)
-    sqlite3.connect("users.db").cursor().execute(q)
-    return "type confusion"
+    # Still SQL injection, but through runtime reflection
+    return str(cur.execute(f"SELECT * FROM users WHERE id={val}").fetchall())
 
 
-# -----------------------------------------------------------
-# 8) CUSTOM SANITIZER WITH NO EFFECT
-# -----------------------------------------------------------
+# --------------------------------------------------------
+# 4) META-PROGRAMMING WITH COMPILE()
+# --------------------------------------------------------
 
-def pseudo_sanitize(x):
-    # obfuscates string but not safe
-    return base64.b64decode(base64.b64encode(x.encode())).decode()
-
-@app.route("/pseudo_sanitize")
-def pseudo_sanitize_sql():
+@app.route("/compile_exec")
+def compile_exec():
     raw = request.args.get("id")
-    clean = pseudo_sanitize(raw)
-    q = "SELECT * FROM users WHERE id=" + clean
-    sqlite3.connect("users.db").cursor().execute(q)
-    return "pseudo sanitized SQL"
+    code = compile("result = 'Fetched: ' + raw", "<string>", "exec")
+    loc = {"raw": raw}
+    exec(code, loc)
+    return loc["result"]
+
+
+# --------------------------------------------------------
+# 5) CUSTOM REFLECTIVE COMMAND SINK
+# --------------------------------------------------------
+
+def run_command(cmd):
+    os.system(cmd)
+
+@app.route("/indirect_cmd")
+def indirect_cmd():
+    # Call through intermediate function name stored in user data
+    func_name = request.args.get("fn")
+    command = "ping -c 1 " + request.args.get("ip")
+    globals()[func_name](command)
+    return "indirect cmd"
 
 
 if __name__ == "__main__":
     app.run(debug=True)
-    
